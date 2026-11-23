@@ -19,6 +19,7 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute
 .hole b{font-size:22px}
 button{font-size:15px;padding:9px 12px;border-radius:10px;border:1px solid var(--ac);background:var(--ac);color:var(--acink);font-weight:600}
 button.alt{background:transparent;color:var(--ac)}
+.btns{display:flex;gap:8px;margin:8px 0}.btns button{flex:1}
 .dists{display:flex;gap:8px;margin:10px 0}
 .d{flex:1;text-align:center;background:var(--bg);border-radius:10px;padding:8px}
 .d.c{border:2px solid var(--ac)}
@@ -70,6 +71,19 @@ summary{font-size:13px;color:var(--mute);cursor:pointer}
 </section>
 
 <section class="card">
+  <details id="mapper"><summary>Map my course</summary>
+    <div class="note" style="margin-top:8px">Stand on the spot and tap. Mark the tee, then walk to the green and mark its center. Front and back are optional but give you front/back yardage. Your map is saved on this device and used before OpenStreetMap.</div>
+    <div class="hole" style="margin:10px 0"><button class="alt" id="mPrev">‹</button><div style="text-align:center"><b id="mHole">Hole 1</b><div class="note" id="mState"></div></div><button class="alt" id="mNext">›</button></div>
+    <div class="row"><label for="mPar">Par</label><input id="mPar" type="number" inputmode="numeric" placeholder="4"></div>
+    <div class="btns"><button id="mTee">Mark tee</button></div>
+    <div class="btns"><button id="mFront" class="alt">Green front</button><button id="mCenter">Green center</button><button id="mBack" class="alt">Green back</button></div>
+    <div class="note" id="mMsg"></div>
+    <div class="btns"><button class="alt" id="mClear">Clear this hole</button><button class="alt" id="mExport">Copy all data</button></div>
+    <div class="row"><input id="mImport" placeholder="Paste saved course data"><button id="mImportGo" class="alt">Import</button></div>
+  </details>
+</section>
+
+<section class="card">
   <details><summary>Your bag (carry yards)</summary><div class="bag" id="bag" style="margin-top:8px"></div></details>
   <details style="margin-top:10px"><summary>Test without GPS</summary>
     <div class="row"><input id="fake" placeholder="lat, lon  (e.g. 41.5000, -72.9000)"><button id="fakeGo">Use</button></div>
@@ -96,6 +110,24 @@ function centroid(p){var la=0,lo=0;p.forEach(function(q){la+=q.lat;lo+=q.lon});r
 function segDist(p,a,b){var k=Math.cos(rad(p.lat));var f=function(q){return{x:(q.lon-p.lon)*k*111320,y:(q.lat-p.lat)*110540}};var A=f(a),B=f(b);var dx=B.x-A.x,dy=B.y-A.y,l2=dx*dx+dy*dy;var t=l2?(-A.x*dx-A.y*dy)/l2:0;t=Math.max(0,Math.min(1,t));return Math.hypot(A.x+t*dx,A.y+t*dy)}
 function lineDist(p,pts){var m=1e9;for(var i=0;i<pts.length-1;i++)m=Math.min(m,segDist(p,pts[i],pts[i+1]));return m}
 
+/* ---------- my own mapped holes (saved on this device) ---------- */
+var MK="caddie-mycourse";
+function loadSaved(){try{var s=JSON.parse(localStorage.getItem(MK));return Array.isArray(s)?s:[]}catch(e){return[]}}
+function saveSaved(a){try{localStorage.setItem(MK,JSON.stringify(a))}catch(e){mMsg("Couldn’t save on this device (storage is blocked).")}}
+function savedHoles(){
+  return loadSaved().filter(function(h){return h.tee&&h.center}).map(function(h){
+    var pts=[h.center];if(h.front)pts.push(h.front);if(h.back)pts.push(h.back);
+    return{ref:h.ref,par:h.par||"",pts:[h.tee,h.center],green:{pts:pts,c:h.center,fb:!!(h.front&&h.back)},mine:true};
+  });
+}
+function nearSaved(sh,p){return sh.some(function(h){return distM(p,h.pts[0])<1500||distM(p,h.pts[1])<1500})}
+function getHoles(p){
+  var sh=savedHoles();
+  if(!sh.length||!nearSaved(sh,p))return S.course||[];
+  var refs={};sh.forEach(function(h){refs[h.ref]=1});
+  return sh.concat((S.course||[]).filter(function(h){return!refs[h.ref]})).sort(function(a,b){return a.ref-b.ref});
+}
+
 /* ---------- data: OpenStreetMap via Overpass ---------- */
 function loadCourse(p){
   if(S.loading)return;S.loading=true;status("Loading course map…");
@@ -108,7 +140,7 @@ function loadCourse(p){
       if(!e.geometry||e.geometry.length<2||!e.tags)return;
       var pts=e.geometry.map(function(g){return{lat:g.lat,lon:g.lon}});
       if(e.tags.golf==="hole")holes.push({ref:parseInt(e.tags.ref,10)||0,par:e.tags.par||"",pts:pts});
-      else if(e.tags.golf==="green")greens.push({pts:pts,c:centroid(pts)});
+      else if(e.tags.golf==="green")greens.push({pts:pts,c:centroid(pts),fb:true});
     });
     holes.forEach(function(h){
       var end=h.pts[h.pts.length-1],best=null,bd=80;
@@ -117,7 +149,7 @@ function loadCourse(p){
     });
     holes.sort(function(a,b){return a.ref-b.ref});
     S.course=holes;S.courseAt=p;S.idx=0;
-    if(!holes.length)status("No mapped golf holes within 1 mi. OpenStreetMap coverage varies by course.");
+    if(!holes.length)status("No mapped golf holes within 1 mi in OpenStreetMap. Use “Map my course” below.");
     render();
   })
   .catch(function(e){status("Couldn’t load course map ("+e.message+"). Will retry.");S.courseAt=null})
@@ -146,16 +178,16 @@ function cur(){return S.fake||S.pos}
 
 function render(){
   var p=cur();if(!p)return;
-  var holes=S.course||[];
+  var holes=getHoles(p);
   if(!holes.length)return;
   if(S.auto){var bi=0,bd=1e9;holes.forEach(function(h,i){var d=lineDist(p,h.pts);if(d<bd){bd=d;bi=i}});S.idx=bi}
   S.idx=Math.max(0,Math.min(holes.length-1,S.idx));
   var h=holes[S.idx];
   var target=h.green?h.green.c:h.pts[h.pts.length-1];
   var dC=distM(p,target)*YD,dF=null,dB=null;
-  if(h.green){var ds=h.green.pts.map(function(q){return distM(p,q)*YD});dF=Math.min.apply(null,ds);dB=Math.max.apply(null,ds)}
+  if(h.green&&h.green.fb){var ds=h.green.pts.map(function(q){return distM(p,q)*YD});dF=Math.min.apply(null,ds);dB=Math.max.apply(null,ds)}
   $("holeN").textContent="Hole "+(h.ref||S.idx+1);
-  $("holeP").textContent=(h.par?"Par "+h.par+" · ":"")+(h.green?"green mapped":"green not mapped, using end of hole line");
+  $("holeP").textContent=(h.par?"Par "+h.par+" · ":"")+(h.mine?"my mapped hole":(h.green?"OpenStreetMap, green mapped":"OpenStreetMap, using end of hole line"));
   $("dF").textContent=dF===null?"–":Math.round(dF);
   $("dC").textContent=Math.round(dC);
   $("dB").textContent=dB===null?"–":Math.round(dB);
@@ -167,7 +199,7 @@ function render(){
   $("windLine").textContent=S.wind?("Wind "+Math.round(w.spd)+" mph: "+(Math.abs(head)<1?"":Math.round(Math.abs(head))+" mph "+(head>0?"into you":"behind you"))+(Math.abs(cross)<1?"":" · "+Math.round(Math.abs(cross))+" mph from the "+(cross>0?"right":"left"))+" · "+Math.round(w.temp)+"°F"):"Wind: loading…";
 
   /* elevation (auto, with manual override) */
-  var key=S.idx+"";
+  var key=(h.mine?"m":"o")+h.ref+"-"+S.idx;
   if(S.elevKey!==key||(S.elevPos&&distM(S.elevPos,p)>40))loadElev(p,target,key);
   var ov=parseFloat($("elevOv").value);
   var elev=isNaN(ov)?(S.elev||0):ov;
@@ -208,8 +240,9 @@ function render(){
 /* ---------- position updates ---------- */
 function onPos(p){
   S.pos=p;var c=cur();
-  status((S.fake?"Test location":"GPS ±"+Math.round((p.acc||0)*YD)+" yd")+(S.course?" · "+S.course.length+" holes loaded":""));
-  if(!S.courseAt||distM(S.courseAt,c)>900)loadCourse(c);
+  var hs=getHoles(c),sh=savedHoles(),mine=sh.length&&nearSaved(sh,c);
+  status((S.fake?"Test location":"GPS ±"+Math.round((p.acc||0)*YD)+" yd")+(hs.length?" · "+hs.length+" holes"+(mine?" (incl. my map)":""):""));
+  if(!mine&&(!S.courseAt||distM(S.courseAt,c)>900))loadCourse(c);
   if(!S.wind||Date.now()-S.windAt>600000||(S.windPos&&distM(S.windPos,c)>1500))loadWind(c);
   render();
 }
@@ -219,6 +252,56 @@ function startGPS(){
     function(e){status("GPS error: "+e.message+". GPS needs HTTPS and location permission.")},
     {enableHighAccuracy:true,maximumAge:2000,timeout:20000});
 }
+
+/* ---------- map my course ---------- */
+var M={n:1};
+function mMsg(t){$("mMsg").textContent=t}
+function mShow(){
+  var h=null,a=loadSaved();for(var i=0;i<a.length;i++)if(a[i].ref===M.n)h=a[i];
+  $("mHole").textContent="Hole "+M.n;
+  var ck=function(k){return h&&h[k]?"✓":"–"};
+  $("mState").textContent="tee "+ck("tee")+" · front "+ck("front")+" · center "+ck("center")+" · back "+ck("back");
+  $("mPar").value=h&&h.par?h.par:"";
+}
+function mark(kind){
+  if(!navigator.geolocation){mMsg("This browser has no GPS.");return}
+  mMsg("Getting a GPS fix…");
+  navigator.geolocation.getCurrentPosition(function(g){
+    var pt={lat:g.coords.latitude,lon:g.coords.longitude},acc=Math.round(g.coords.accuracy*YD);
+    var a=loadSaved(),h=null;
+    for(var i=0;i<a.length;i++)if(a[i].ref===M.n)h=a[i];
+    if(!h){h={ref:M.n};a.push(h)}
+    h[kind]=pt;
+    var par=parseInt($("mPar").value,10);if(par)h.par=par;
+    a.sort(function(x,y){return x.ref-y.ref});
+    saveSaved(a);
+    mMsg("Saved "+kind+" for hole "+M.n+" (GPS ±"+acc+" yd)."+(acc>15?" Weak fix: wait a few seconds in the open and tap again for a better one.":"")+(kind==="center"?" Tap › for the next hole.":""));
+    mShow();render();
+  },function(e){mMsg("No GPS fix: "+e.message)},{enableHighAccuracy:true,maximumAge:0,timeout:20000});
+}
+$("mTee").onclick=function(){mark("tee")};
+$("mFront").onclick=function(){mark("front")};
+$("mCenter").onclick=function(){mark("center")};
+$("mBack").onclick=function(){mark("back")};
+$("mPrev").onclick=function(){M.n=Math.max(1,M.n-1);mMsg("");mShow()};
+$("mNext").onclick=function(){M.n=Math.min(36,M.n+1);mMsg("");mShow()};
+$("mClear").onclick=function(){
+  saveSaved(loadSaved().filter(function(h){return h.ref!==M.n}));
+  mMsg("Cleared hole "+M.n+".");mShow();render();
+};
+$("mExport").onclick=function(){
+  var s=JSON.stringify(loadSaved());
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(s).then(function(){mMsg("Copied. Paste it somewhere safe (Notes) as a backup.")},function(){mMsg(s)})}
+  else mMsg(s);
+};
+$("mImportGo").onclick=function(){
+  try{
+    var a=JSON.parse($("mImport").value);
+    if(!Array.isArray(a)||a.some(function(h){return typeof h.ref!=="number"}))throw new Error("bad");
+    saveSaved(a);$("mImport").value="";mMsg("Imported "+a.length+" holes.");mShow();render();
+  }catch(e){mMsg("That doesn’t look like saved course data.")}
+};
+(function(){var a=loadSaved(),n=1;while(n<18&&a.some(function(h){return h.ref===n&&h.center}))n++;M.n=n;mShow()})();
 
 /* ---------- UI wiring ---------- */
 function buildBag(){
